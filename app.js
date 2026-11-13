@@ -97,8 +97,7 @@
   let toastTimer;
   function toast(text) {
     const t = $('#toast');
-    const dlg = $('#editor');
-    (dlg.open ? dlg : document.body).append(t); // 열린 편집기 위에도 보이도록
+    (document.querySelector('dialog[open]') || document.body).append(t); // 열린 대화상자 위에도 보이도록
     t.textContent = text;
     t.hidden = false;
     clearTimeout(toastTimer);
@@ -300,6 +299,7 @@
       state.memos = Array.isArray(list) ? list : [];
       sortMemos();
       render();
+      backup.syncSilently(); // 다른 기기에서 바뀐 내용도 백업 파일에 반영 (PC)
     } catch (err) {
       fail('불러오기 실패', err);
     } finally {
@@ -350,6 +350,7 @@
 
     setEditorBusy(true);
     try {
+      await backup.prepare(); // 버튼을 누른 직후에 백업 파일 권한 확보
       if (editing) {
         const updated = await store.update(editing.id, payload);
         state.memos = state.memos.map((m) => (m.id === updated.id ? updated : m));
@@ -361,7 +362,7 @@
       state.month = monthOf(payload.memo_date);
       closeEditor(true);
       render();
-      toast('저장했어요');
+      toast('저장했어요' + (await backup.afterChange()));
     } catch (err) {
       fail('저장 실패', err);
     } finally {
@@ -373,16 +374,250 @@
     if (!editing || !confirm('이 메모를 삭제할까요?')) return;
     setEditorBusy(true);
     try {
+      await backup.prepare();
       await store.remove(editing.id);
       const id = editing.id;
       state.memos = state.memos.filter((m) => m.id !== id);
       closeEditor(true);
       render();
-      toast('삭제했어요');
+      toast('삭제했어요' + (await backup.afterChange()));
     } catch (err) {
       fail('삭제 실패', err);
     } finally {
       setEditorBusy(false);
+    }
+  }
+
+  // ===================================================================
+  // 백업 (giho_memo_backup.txt)
+  //  - PC Chrome/Edge: 처음 고른 위치의 파일을 계속 덮어씀 (File System Access API)
+  //  - 그 외(Android 등): 다운로드 폴더로 파일 내려받기
+  // ===================================================================
+  const BACKUP_NAME = 'giho_memo_backup.txt';
+  const BK_AUTO = 'memo-backup-auto';
+  const BK_LAST = 'memo-backup-last';
+  const BK_HASH = 'memo-backup-hash';
+  const FS_SUPPORTED = typeof window.showSaveFilePicker === 'function';
+
+  // 파일 위치(핸들)는 localStorage에 못 넣어서 IndexedDB에 보관
+  const idb = {
+    open() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('memo-app', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('kv');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    },
+    async run(mode, fn) {
+      // 브라우저 저장소가 응답하지 않아도(사생활 보호 모드 등) 앱이 멈추지 않도록 시간 제한
+      const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('IndexedDB 응답 없음')), 2000));
+      const job = (async () => {
+        const db = await this.open();
+        return new Promise((resolve, reject) => {
+          const req = fn(db.transaction('kv', mode).objectStore('kv'));
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      })();
+      return Promise.race([job, timeout]);
+    },
+    get(k) { return this.run('readonly', (s) => s.get(k)); },
+    set(k, v) { return this.run('readwrite', (s) => s.put(v, k)); },
+    del(k) { return this.run('readwrite', (s) => s.delete(k)); },
+  };
+
+  const fmtStamp = (value) => {
+    if (!value) return '-';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '-';
+    return `${toKey(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+
+  function hashMemos(memos) {
+    const s = JSON.stringify(memos.map((m) => [m.id, m.memo_date, m.title, m.content, m.updated_at]));
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return `${memos.length}-${h.toString(16)}`;
+  }
+
+  function buildBackupText(memos) {
+    const line = '='.repeat(60);
+    const thin = '-'.repeat(60);
+    const out = [
+      'giho 메모 백업',
+      `백업 시각: ${fmtStamp(new Date())}`,
+      `메모 수: ${memos.length}개`,
+      line,
+    ];
+    for (const m of memos) {
+      out.push(
+        '',
+        `[${fmtDay(m.memo_date)}] ${(m.title || '').trim() || '(제목 없음)'}`,
+        `작성: ${fmtStamp(m.created_at)}  /  수정: ${fmtStamp(m.updated_at)}`,
+        thin,
+        (m.content || '').replace(/\r?\n/g, '\r\n'),
+        '',
+        line,
+      );
+    }
+    return '﻿' + out.join('\r\n') + '\r\n'; // BOM: 메모장 등에서 한글 깨짐 방지
+  }
+
+  function downloadText(text) {
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    const a = el('a', { href: url, download: BACKUP_NAME, hidden: true });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+
+  const backup = {
+    handle: null,
+    auto: storage.get(BK_AUTO) !== 'off',
+    note: '',
+    ready: Promise.resolve(),
+
+    async init() {
+      if (!FS_SUPPORTED) return;
+      try { this.handle = (await idb.get('backupHandle')) || null; } catch { this.handle = null; }
+    },
+
+    setAuto(on) {
+      this.auto = on;
+      storage.set(BK_AUTO, on ? 'on' : 'off');
+      renderBackupDialog();
+    },
+
+    async pickLocation() {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: BACKUP_NAME,
+        startIn: 'downloads',
+        types: [{ description: '텍스트 파일', accept: { 'text/plain': ['.txt'] } }],
+      });
+      this.handle = handle;
+      idb.set('backupHandle', handle).catch(() => { /* 이번 세션만 유지 */ });
+      renderBackupDialog();
+      return handle;
+    },
+
+    async hasPermission(interactive) {
+      if (!this.handle) return false;
+      const opts = { mode: 'readwrite' };
+      if ((await this.handle.queryPermission(opts)) === 'granted') return true;
+      if (!interactive) return false;
+      return (await this.handle.requestPermission(opts)) === 'granted';
+    },
+
+    // 저장/삭제 버튼을 누른 직후(사용자 동작이 살아 있을 때) 호출해 위치·권한을 미리 확보
+    async prepare() {
+      this.note = '';
+      await this.ready;
+      if (!this.auto || !FS_SUPPORTED) return;
+      try {
+        if (!this.handle) await this.pickLocation();
+        else await this.hasPermission(true);
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          this.setAuto(false);
+          this.note = ' · 백업 위치를 정하지 않아 자동 백업을 껐어요 (백업 메뉴에서 다시 켤 수 있어요)';
+        }
+      }
+    },
+
+    // 실제 백업. 백업했으면 true, 건너뛰었으면 false. 실패하면 throw.
+    async run({ manual = false } = {}) {
+      await this.ready;
+      const text = buildBackupText(state.memos);
+      if (FS_SUPPORTED) {
+        if (!this.handle) {
+          if (!manual) return false;
+          await this.pickLocation();
+        }
+        if (!(await this.hasPermission(manual))) {
+          if (!manual) return false;
+          throw new Error('백업 파일에 쓸 권한이 없어요');
+        }
+        try {
+          const w = await this.handle.createWritable();
+          await w.write(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+          await w.close();
+        } catch (err) {
+          if (err && err.name === 'NotFoundError') {
+            this.handle = null;
+            idb.del('backupHandle').catch(() => {});
+            renderBackupDialog();
+            throw new Error('백업 파일을 찾을 수 없어요. 백업 메뉴에서 위치를 다시 정해 주세요');
+          }
+          throw err;
+        }
+      } else {
+        downloadText(text);
+      }
+      storage.set(BK_LAST, new Date().toISOString());
+      storage.set(BK_HASH, hashMemos(state.memos));
+      renderBackupDialog();
+      return true;
+    },
+
+    // 메모 추가/수정/삭제 직후 호출. 토스트 뒤에 붙일 문구를 돌려줌
+    async afterChange() {
+      if (this.note) { const n = this.note; this.note = ''; return n; }
+      if (!this.auto) return '';
+      try {
+        return (await this.run()) ? ' · 백업 완료' : ' · 백업 건너뜀 (백업 메뉴 확인)';
+      } catch (err) {
+        console.error(err);
+        return ` · 백업 실패: ${errMsg(err)}`;
+      }
+    },
+
+    // 앱을 열거나 다시 돌아왔을 때: 내용이 바뀌었으면 조용히 백업 파일 갱신 (권한이 이미 있는 PC만)
+    async syncSilently() {
+      await this.ready;
+      if (!FS_SUPPORTED || !this.auto || !this.handle) return;
+      if (storage.get(BK_HASH) === hashMemos(state.memos)) return;
+      try {
+        if (await this.hasPermission(false)) await this.run();
+      } catch (err) {
+        console.warn('자동 백업 동기화 실패', err);
+      }
+    },
+  };
+
+  function renderBackupDialog() {
+    const dlgEl = $('#backup-dlg');
+    if (!dlgEl || !dlgEl.open) return;
+    $('#bk-desc').textContent = FS_SUPPORTED
+      ? `처음 한 번 저장 위치를 고르면, 그 위치의 ${BACKUP_NAME} 파일에 모든 메모를 덮어써서 저장해요. 다른 기기에서 바뀐 내용은 이 기기에서 앱을 열 때 반영돼요.`
+      : `이 기기의 다운로드 폴더에 ${BACKUP_NAME}로 모든 메모를 저장해요. 이 브라우저는 기존 파일 덮어쓰기를 지원하지 않아서, 같은 이름의 파일이 있으면 번호가 붙을 수 있어요. 가장 최근 파일이 최신 백업이에요.`;
+    $('#bk-file').textContent = FS_SUPPORTED
+      ? (backup.handle ? `${backup.handle.name} (위치 지정됨)` : '아직 위치를 정하지 않았어요')
+      : `다운로드 폴더 / ${BACKUP_NAME}`;
+    const last = storage.get(BK_LAST);
+    $('#bk-last').textContent = last ? fmtStamp(last) : '아직 없음';
+    $('#bk-auto').checked = backup.auto;
+    $('#bk-pick').hidden = !FS_SUPPORTED;
+    $('#bk-pick').textContent = backup.handle ? '저장 위치 변경' : '저장 위치 선택';
+  }
+
+  function openBackupDialog() {
+    $('#backup-dlg').showModal();
+    renderBackupDialog();
+  }
+
+  async function manualBackup() {
+    const btn = $('#bk-now');
+    btn.disabled = true;
+    try {
+      await backup.run({ manual: true });
+      toast(FS_SUPPORTED ? `${BACKUP_NAME}에 백업했어요` : `다운로드 폴더에 ${BACKUP_NAME}를 저장했어요`);
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // 위치 선택 취소
+      fail('백업 실패', err);
+    } finally {
+      btn.disabled = false;
     }
   }
 
@@ -505,6 +740,28 @@
       if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); $('#ed-content').focus(); }
     });
 
+    // 백업
+    const bkDlg = $('#backup-dlg');
+    $('#backup-btn').addEventListener('click', openBackupDialog);
+    $('#bk-close').addEventListener('click', () => bkDlg.close());
+    bkDlg.addEventListener('click', (e) => { if (e.target === bkDlg) bkDlg.close(); });
+    $('#bk-now').addEventListener('click', manualBackup);
+    $('#bk-pick').addEventListener('click', async () => {
+      try { await backup.pickLocation(); toast('저장 위치를 정했어요'); } catch (err) {
+        if (!err || err.name !== 'AbortError') fail('위치 선택 실패', err);
+      }
+    });
+    $('#bk-auto').addEventListener('change', async (e) => {
+      const on = e.target.checked;
+      if (on && FS_SUPPORTED && !backup.handle) {
+        try { await backup.pickLocation(); } catch {
+          e.target.checked = false;
+          return;
+        }
+      }
+      backup.setAuto(on);
+    });
+
     // 비밀 키
     $('#auth-form').addEventListener('submit', submitKey);
 
@@ -517,8 +774,9 @@
   // ===================================================================
   // 시작
   // ===================================================================
-  function init() {
+  async function init() {
     bindUI();
+    backup.ready = backup.init(); // 화면 표시를 기다리게 하지 않음
 
     if (!CONFIGURED) {
       store = localStore;

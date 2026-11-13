@@ -36,6 +36,7 @@
         <button type="button" data-view="calendar">달력</button>
         <button type="button" data-view="list">리스트</button>
       </div>
+      <button type="button" id="backup-btn" class="btn ghost small" title="메모 백업">백업</button>
       <button type="button" id="lock-btn" class="btn ghost small" title="이 기기에서 비밀 키 지우기" hidden>잠금</button>
     </header>
     <div id="local-banner" class="banner" hidden>
@@ -61,6 +62,29 @@
         <button type="submit" id="ed-save" class="btn primary">저장</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- 백업 -->
+  <dialog id="backup-dlg" class="sheet" aria-labelledby="bk-title">
+    <div class="sheet-inner">
+      <div class="sheet-head">
+        <h2 id="bk-title">백업</h2>
+        <button type="button" id="bk-close" class="icon-btn" aria-label="닫기">✕</button>
+      </div>
+      <div class="sheet-body">
+        <p id="bk-desc" class="muted"></p>
+        <dl class="bk-info">
+          <dt>백업 파일</dt><dd id="bk-file"></dd>
+          <dt>마지막 백업</dt><dd id="bk-last"></dd>
+        </dl>
+        <label class="check"><input type="checkbox" id="bk-auto"> 메모를 추가·수정·삭제할 때마다 자동 백업</label>
+      </div>
+      <div class="sheet-foot">
+        <button type="button" id="bk-pick" class="btn">저장 위치 선택</button>
+        <span class="spacer"></span>
+        <button type="button" id="bk-now" class="btn primary">지금 백업</button>
+      </div>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>
