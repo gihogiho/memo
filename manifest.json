@@ -1,0 +1,13 @@
+{
+  "name": "메모",
+  "short_name": "메모",
+  "description": "PC와 휴대폰에서 함께 쓰는 날짜별 메모",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f7f7f8",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

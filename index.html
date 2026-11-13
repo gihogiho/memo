@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f0f11" media="(prefers-color-scheme: dark)">
+  <title>메모</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+
+  <!-- 비밀 키 입력 화면 (기기마다 처음 한 번) -->
+  <div id="auth" class="auth" hidden>
+    <form id="auth-form" class="auth-card">
+      <h1>메모</h1>
+      <p class="muted">이 기기에서 처음 쓰는 거라면 비밀 키를 입력하세요. 한 번 입력하면 이 브라우저에 저장돼요.</p>
+      <input id="auth-key" type="password" placeholder="비밀 키" autocomplete="current-password" aria-label="비밀 키">
+      <button type="submit" id="auth-submit" class="btn primary">시작하기</button>
+      <p id="auth-msg" class="auth-msg" role="status"></p>
+    </form>
+  </div>
+
+  <!-- 메인 화면 -->
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <h1 class="logo">메모</h1>
+      <label class="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="search" type="search" placeholder="제목·본문 검색" aria-label="메모 검색" autocomplete="off">
+      </label>
+      <div class="seg" role="group" aria-label="보기 방식">
+        <button type="button" data-view="calendar">달력</button>
+        <button type="button" data-view="list">리스트</button>
+      </div>
+      <button type="button" id="lock-btn" class="btn ghost small" title="이 기기에서 비밀 키 지우기" hidden>잠금</button>
+    </header>
+    <div id="local-banner" class="banner" hidden>
+      아직 Supabase를 설정하지 않아서 메모가 이 브라우저에만 저장됩니다. README.md를 보고 config.js를 채우면 기기 간 동기화가 켜져요.
+    </div>
+    <main id="main"></main>
+    <button type="button" id="fab" class="fab" aria-label="새 메모">+</button>
+  </div>
+
+  <!-- 메모 편집기 -->
+  <dialog id="editor" class="editor" aria-label="메모 편집">
+    <form id="editor-form">
+      <div class="editor-head">
+        <input id="ed-date" type="date" required aria-label="날짜">
+        <button type="button" id="ed-close" class="icon-btn" aria-label="닫기">✕</button>
+      </div>
+      <input id="ed-title" class="ed-title" placeholder="제목" maxlength="200" autocomplete="off">
+      <textarea id="ed-content" class="ed-content" placeholder="내용을 입력하세요"></textarea>
+      <div class="editor-foot">
+        <button type="button" id="ed-delete" class="btn ghost danger">삭제</button>
+        <span class="spacer"></span>
+        <button type="button" id="ed-cancel" class="btn ghost">취소</button>
+        <button type="submit" id="ed-save" class="btn primary">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
